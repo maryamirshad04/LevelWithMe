@@ -1,5 +1,5 @@
 // api/get.js — GET /api/get?id=...
-// Returns { photo, quote, audio } for a given MongoDB ObjectId
+// Returns { photoUrl, quote, audioUrl } for a given MongoDB ObjectId
 
 const { MongoClient, ObjectId } = require('mongodb');
 
@@ -38,9 +38,9 @@ module.exports = async function handler(req, res) {
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
     return res.status(200).json({
-      photo: doc.photo,
+      photoUrl: doc.photoUrl,
       quote: doc.quote,
-      audio: doc.audio || null,  // null if sender didn't upload audio
+      audioUrl: doc.audioUrl || null,
     });
   } catch (err) {
     console.error(err);

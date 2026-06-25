@@ -1,6 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
-
+ 
+// ── Cloudinary config — replace with your own values ──────────
+const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME;
+const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET;
+ 
+async function uploadToCloudinary(file, resourceType = 'image') {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+ 
+  const res = await fetch(
+    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`,
+    { method: 'POST', body: formData }
+  );
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error?.message || 'Upload failed');
+  }
+  const data = await res.json();
+  return data.secure_url;
+}
+ 
 // ── Simple client-side routing ─────────────────────────────────
 function getGameId() {
   const match = window.location.pathname.match(/^\/play\/([a-f0-9]{24})$/i);
@@ -27,12 +48,13 @@ export default function App() {
 // LANDING PAGE
 // ─────────────────────────────────────────────────────────────────
 function LandingPage() {
-  const [photo, setPhoto] = useState(null);
+  const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [quote, setQuote] = useState('');
-  const [audio, setAudio] = useState(null);         // base64 or null
-  const [audioName, setAudioName] = useState('');   // filename for display
+  const [audioFile, setAudioFile] = useState(null);
+  const [audioName, setAudioName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState('');
   const [link, setLink] = useState('');
   const [error, setError] = useState('');
   const [stars, setStars] = useState([]);
@@ -53,52 +75,66 @@ function LandingPage() {
     const file = e.target.files[0];
     if (!file) return;
     if (!file.type.startsWith('image/')) { setError('Please upload an image file'); return; }
-    if (file.size > 3 * 1024 * 1024) { setError('Image must be under 3MB'); return; }
+    if (file.size > 10 * 1024 * 1024) { setError('Image must be under 10MB'); return; }
     setError('');
-    const reader = new FileReader();
-    reader.onload = (ev) => { setPhoto(ev.target.result); setPhotoPreview(ev.target.result); };
-    reader.readAsDataURL(file);
+    setPhotoFile(file);
+    setPhotoPreview(URL.createObjectURL(file));
   }
 
   function handleAudioFile(e) {
     const file = e.target.files[0];
     if (!file) return;
     if (!file.type.startsWith('audio/')) { setError('Please upload an audio file (mp3, wav, etc.)'); return; }
-    if (file.size > 6 * 1024 * 1024) { setError('Audio must be under 6MB'); return; }
+    if (file.size > 10 * 1024 * 1024) { setError('Audio must be under 10MB'); return; }
     setError('');
+    setAudioFile(file);
     setAudioName(file.name);
-    const reader = new FileReader();
-    reader.onload = (ev) => setAudio(ev.target.result);
-    reader.readAsDataURL(file);
   }
 
+  
   function removeAudio() {
-    setAudio(null);
+    setAudioFile(null);
     setAudioName('');
     if (audioRef.current) audioRef.current.value = '';
   }
-
+ 
   async function handleSubmit() {
-    if (!photo) { setError('Upload a photo first ♥'); return; }
+    if (!photoFile) { setError('Upload a photo first ♥'); return; }
     if (!quote.trim()) { setError('Write something from the heart ♥'); return; }
     setError('');
     setLoading(true);
+ 
     try {
+      // Step 1: upload photo to Cloudinary
+      setLoadingMsg('UPLOADING PHOTO...');
+      const photoUrl = await uploadToCloudinary(photoFile, 'image');
+ 
+      // Step 2: upload audio to Cloudinary (if provided)
+      let audioUrl = null;
+      if (audioFile) {
+        setLoadingMsg('UPLOADING SONG...');
+        audioUrl = await uploadToCloudinary(audioFile, 'video'); // Cloudinary uses 'video' for audio
+      }
+ 
+      // Step 3: save URLs to MongoDB via our API
+      setLoadingMsg('SAVING...');
       const res = await fetch('/api/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photo, quote: quote.trim(), audio: audio || null }),
+        body: JSON.stringify({ photoUrl, quote: quote.trim(), audioUrl }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save');
+ 
       setLink(`${window.location.origin}/play/${data.id}`);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
+      setLoadingMsg('');
     }
   }
-
+ 
   function handleCopy() {
     navigator.clipboard.writeText(link).then(() => {
       setCopied(true);
@@ -159,7 +195,7 @@ function LandingPage() {
           {/* Audio upload */}
           <div className="audio-upload-area">
             <label className="quote-label">YOUR SONG <span className="optional-tag">(OPTIONAL)</span></label>
-            {!audio ? (
+            {!audioFile ? (
               <div className="audio-drop-zone" onClick={() => audioRef.current.click()}>
                 <span className="audio-icon">🎵</span>
                 <span className="audio-hint">CLICK TO UPLOAD AUDIO</span>
@@ -185,7 +221,7 @@ function LandingPage() {
 
           {!link && (
             <button className="arcade-button landing-btn" onClick={handleSubmit} disabled={loading}>
-              <span className="button-label">{loading ? 'SAVING...' : '▶ GENERATE LINK'}</span>
+              <span className="button-label">{loading ? loadingMsg || 'LOADING...' : '▶ GENERATE LINK'}</span>
             </button>
           )}
 
@@ -199,8 +235,8 @@ function LandingPage() {
                 </button>
               </div>
               <button className="reset-button pixel-text" onClick={() => {
-                setLink(''); setPhoto(null); setPhotoPreview(null);
-                setQuote(''); setAudio(null); setAudioName('');
+                setLink(''); setPhotoFile(null); setPhotoPreview(null);
+                setQuote(''); setAudioFile(null); setAudioName('');
               }}>
                 ↩ MAKE ANOTHER
               </button>
@@ -211,7 +247,7 @@ function LandingPage() {
     </div>
   );
 }
-
+ 
 // ─────────────────────────────────────────────────────────────────
 // GAME PAGE  (/play/:id)
 // ─────────────────────────────────────────────────────────────────
@@ -220,7 +256,7 @@ function GamePage({ gameId }) {
     document.body.classList.add('game-mode');
     return () => document.body.classList.remove('game-mode');
   }, []);
-
+ 
   const [dedication, setDedication] = useState(null);
   const [fetchError, setFetchError] = useState('');
   const [state, setState] = useState(STATES.IDLE);
@@ -231,7 +267,7 @@ function GamePage({ gameId }) {
   const [muted, setMuted] = useState(true);
   const audioRef = useRef(null);
   const swingRef = useRef(null);
-
+ 
   useEffect(() => {
     setStars(
       Array.from({ length: 40 }, (_, i) => ({
@@ -240,7 +276,7 @@ function GamePage({ gameId }) {
       }))
     );
   }, []);
-
+ 
   useEffect(() => {
     fetch(`/api/get?id=${gameId}`)
       .then((r) => r.json())
@@ -250,12 +286,11 @@ function GamePage({ gameId }) {
       })
       .catch((err) => setFetchError(err.message));
   }, [gameId]);
-
-  // Keep audio element in sync with muted state
+ 
   useEffect(() => {
     if (audioRef.current) audioRef.current.muted = muted;
   }, [muted]);
-
+ 
   function toggleMute() {
     const next = !muted;
     setMuted(next);
@@ -263,11 +298,11 @@ function GamePage({ gameId }) {
       audioRef.current.play().catch(() => {});
     }
   }
-
+ 
   function handleMachineClick() {
     if (state === STATES.IDLE) setState(STATES.ZOOMED);
   }
-
+ 
   function handleButtonPress() {
     if (state === STATES.ZOOMED) {
       setState(STATES.CRANE_DOWN);
@@ -276,15 +311,14 @@ function GamePage({ gameId }) {
       setGrabbed(true);
       setTimeout(() => {
         setState(STATES.REVEAL);
-        // Only play if there's actual audio uploaded
-        if (audioRef.current && dedication?.audio) {
+        if (audioRef.current && dedication?.audioUrl) {
           audioRef.current.volume = 0.7;
           audioRef.current.play().catch(() => {});
         }
       }, 1200);
     }
   }
-
+ 
   useEffect(() => {
     if (state === STATES.CRANE_DOWN) {
       let y = 0;
@@ -296,7 +330,7 @@ function GamePage({ gameId }) {
     }
     if (state !== STATES.CRANE_SWING && state !== STATES.CATCH) setCraneY(0);
   }, [state]);
-
+ 
   useEffect(() => {
     if (state === STATES.CRANE_SWING) {
       let t = 0;
@@ -309,12 +343,12 @@ function GamePage({ gameId }) {
       clearInterval(swingRef.current);
     }
   }, [state]);
-
+ 
   function handleReset() {
     setState(STATES.IDLE); setCraneX(50); setCraneY(0); setGrabbed(false);
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
   }
-
+ 
   if (fetchError) {
     return (
       <div className="app">
@@ -326,7 +360,7 @@ function GamePage({ gameId }) {
       </div>
     );
   }
-
+ 
   if (!dedication) {
     return (
       <div className="app">
@@ -336,9 +370,9 @@ function GamePage({ gameId }) {
       </div>
     );
   }
-
-  const hasAudio = !!dedication.audio;
-
+ 
+  const hasAudio = !!dedication.audioUrl;
+ 
   return (
     <div className="app">
       <div className="starfield">
@@ -348,14 +382,13 @@ function GamePage({ gameId }) {
         ))}
       </div>
       <div className="scanlines" />
-
-      {/* Mute toggle — only shown if there's audio to play */}
+ 
       {hasAudio && (
         <button className="mute-btn" onClick={toggleMute} title={muted ? 'Unmute music' : 'Mute music'}>
           {muted ? '🔇' : '🔊'}
         </button>
       )}
-
+ 
       {state === STATES.IDLE && (
         <div className="scene idle-scene" onClick={handleMachineClick}>
           <p className="click-hint blink">[ INSERT COIN ]</p>
@@ -363,7 +396,7 @@ function GamePage({ gameId }) {
           <p className="click-hint small blink-slow">CLICK MACHINE TO PLAY</p>
         </div>
       )}
-
+ 
       {(state === STATES.ZOOMED || state === STATES.CRANE_DOWN ||
         state === STATES.CRANE_SWING || state === STATES.CATCH) && (
         <div className="scene zoomed-scene">
@@ -379,23 +412,22 @@ function GamePage({ gameId }) {
           </div>
         </div>
       )}
-
+ 
       {state === STATES.REVEAL && (
         <div className="scene reveal-scene">
-          <Polaroid onReset={handleReset} photo={dedication.photo} quote={dedication.quote} />
+          <Polaroid onReset={handleReset} photo={dedication.photoUrl} quote={dedication.quote} />
         </div>
       )}
-
-      {/* Audio element — only rendered if sender uploaded audio */}
+ 
       {hasAudio && (
-        <audio ref={audioRef} src={dedication.audio} loop muted />
+        <audio ref={audioRef} src={dedication.audioUrl} loop muted />
       )}
     </div>
   );
 }
-
+ 
 // ─────────────────────────────────────────────────────────────────
-// Full machine (idle view) – pixel-art SVG
+// Full machine (idle view)
 // ─────────────────────────────────────────────────────────────────
 function CraneMachineFull() {
   return (
@@ -410,19 +442,13 @@ function CraneMachineFull() {
         <text x="110" y="78" textAnchor="middle" fontFamily="'Press Start 2P'" fontSize="7" fill="#ff80ff">CRANE GAME</text>
         <polygon points="110,30 115,45 130,45 118,54 122,69 110,60 98,69 102,54 90,45 105,45" fill="#ffe066" stroke="#ffaa00" strokeWidth="1" />
         <ellipse cx="78" cy="210" rx="22" ry="18" fill="#ff80b0" />
-        <circle cx="70" cy="204" r="4" fill="#ff60a0" />
-        <circle cx="86" cy="204" r="4" fill="#ff60a0" />
-        <circle cx="72" cy="206" r="2" fill="#1a0a2e" />
-        <circle cx="84" cy="206" r="2" fill="#1a0a2e" />
-        <circle cx="68" cy="211" r="3" fill="#ff4090" opacity="0.6" />
-        <circle cx="88" cy="211" r="3" fill="#ff4090" opacity="0.6" />
+        <circle cx="70" cy="204" r="4" fill="#ff60a0" /><circle cx="86" cy="204" r="4" fill="#ff60a0" />
+        <circle cx="72" cy="206" r="2" fill="#1a0a2e" /><circle cx="84" cy="206" r="2" fill="#1a0a2e" />
+        <circle cx="68" cy="211" r="3" fill="#ff4090" opacity="0.6" /><circle cx="88" cy="211" r="3" fill="#ff4090" opacity="0.6" />
         <ellipse cx="140" cy="215" rx="20" ry="17" fill="#e060c0" />
-        <circle cx="133" cy="208" r="3.5" fill="#c050b0" />
-        <circle cx="147" cy="208" r="3.5" fill="#c050b0" />
-        <circle cx="135" cy="210" r="2" fill="#1a0a2e" />
-        <circle cx="145" cy="210" r="2" fill="#1a0a2e" />
-        <circle cx="131" cy="215" r="3" fill="#ff4090" opacity="0.6" />
-        <circle cx="149" cy="215" r="3" fill="#ff4090" opacity="0.6" />
+        <circle cx="133" cy="208" r="3.5" fill="#c050b0" /><circle cx="147" cy="208" r="3.5" fill="#c050b0" />
+        <circle cx="135" cy="210" r="2" fill="#1a0a2e" /><circle cx="145" cy="210" r="2" fill="#1a0a2e" />
+        <circle cx="131" cy="215" r="3" fill="#ff4090" opacity="0.6" /><circle cx="149" cy="215" r="3" fill="#ff4090" opacity="0.6" />
         <polygon points="107,175 109,181 115,181 110,185 112,191 107,187 102,191 104,185 99,181 105,181" fill="#ffe066" />
         <polygon points="130,155 131,159 135,159 132,162 133,166 130,163 127,166 128,162 125,159 129,159" fill="#ffe066" />
         <rect x="105" y="96" width="10" height="40" fill="#c0c0ff" />
@@ -450,7 +476,7 @@ function CraneMachineFull() {
     </div>
   );
 }
-
+ 
 // ─────────────────────────────────────────────────────────────────
 // Zoomed-in machine interior
 // ─────────────────────────────────────────────────────────────────
@@ -511,18 +537,15 @@ function ZoomedMachine({ state, craneX, craneY, grabbed, onButtonPress }) {
     </div>
   );
 }
-
+ 
 function PrizeBlob({ color, eyeColor, small }) {
   const s = small ? 0.75 : 1;
   return (
     <svg viewBox="0 0 60 52" width={60 * s} height={52 * s}>
       <ellipse cx="30" cy="30" rx="26" ry="22" fill={color} />
-      <circle cx="14" cy="16" r="8" fill={eyeColor} />
-      <circle cx="46" cy="16" r="8" fill={eyeColor} />
-      <circle cx="22" cy="26" r="4" fill="#1a0a2e" />
-      <circle cx="38" cy="26" r="4" fill="#1a0a2e" />
-      <circle cx="23" cy="25" r="1.5" fill="#fff" />
-      <circle cx="39" cy="25" r="1.5" fill="#fff" />
+      <circle cx="14" cy="16" r="8" fill={eyeColor} /><circle cx="46" cy="16" r="8" fill={eyeColor} />
+      <circle cx="22" cy="26" r="4" fill="#1a0a2e" /><circle cx="38" cy="26" r="4" fill="#1a0a2e" />
+      <circle cx="23" cy="25" r="1.5" fill="#fff" /><circle cx="39" cy="25" r="1.5" fill="#fff" />
       <path d="M24 35 Q30 40 36 35" stroke="#1a0a2e" strokeWidth="2" fill="none" strokeLinecap="round" />
       <circle cx="16" cy="33" r="5" fill="#ff4090" opacity="0.5" />
       <circle cx="44" cy="33" r="5" fill="#ff4090" opacity="0.5" />
@@ -531,10 +554,7 @@ function PrizeBlob({ color, eyeColor, small }) {
     </svg>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Polaroid reveal
-// ─────────────────────────────────────────────────────────────────
+ 
 function Polaroid({ onReset, photo, quote }) {
   return (
     <div className="polaroid-scene">

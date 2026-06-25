@@ -1,5 +1,5 @@
 // api/save.js — POST /api/save
-// Accepts { photo: base64string, quote: string, audio?: base64string }
+// Accepts { photoUrl, quote, audioUrl? } — URLs from Cloudinary, not raw files
 // Saves to MongoDB, returns { id }
 
 const { MongoClient } = require('mongodb');
@@ -24,19 +24,16 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const { photo, quote, audio } = req.body;
+    const { photoUrl, quote, audioUrl } = req.body;
 
-    if (!photo || !quote) return res.status(400).json({ error: 'photo and quote are required' });
+    if (!photoUrl || !quote) return res.status(400).json({ error: 'photoUrl and quote are required' });
     if (quote.length > 200) return res.status(400).json({ error: 'Quote too long (max 200 chars)' });
-    if (photo.length > 4_000_000) return res.status(400).json({ error: 'Photo too large (max ~3MB)' });
-    // audio is optional but if present cap at ~8MB base64 (~6MB file)
-    if (audio && audio.length > 10_000_000) return res.status(400).json({ error: 'Audio too large (max ~6MB)' });
 
     const col = await getDb();
     const result = await col.insertOne({
-      photo,
+      photoUrl,
       quote: quote.trim(),
-      audio: audio || null,   // null = no custom audio
+      audioUrl: audioUrl || null,
       createdAt: new Date(),
     });
 
